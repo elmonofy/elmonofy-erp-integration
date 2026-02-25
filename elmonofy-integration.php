@@ -26,9 +26,9 @@ function elmonofy_add_settings_page() {
 }
 
 function elmonofy_register_settings() {
-    register_setting( 'elmonofy_settings_group', 'elmonofy_erp_url' );
-    register_setting( 'elmonofy_settings_group', 'elmonofy_erp_token' );
-    register_setting( 'elmonofy_settings_group', 'elmonofy_pickup_warehouse' );
+    register_setting( 'elmonofy_settings_group', 'elmonofy_erp_url', ['sanitize_callback' => 'esc_url_raw'] );
+    register_setting( 'elmonofy_settings_group', 'elmonofy_erp_token', ['sanitize_callback' => 'sanitize_text_field'] );
+    register_setting( 'elmonofy_settings_group', 'elmonofy_pickup_warehouse', ['sanitize_callback' => 'sanitize_text_field'] );
     
     if ( false === get_option( 'elmonofy_pickup_warehouse' ) ) {
         update_option( 'elmonofy_pickup_warehouse', 'Online - EG' );
@@ -64,28 +64,28 @@ function elmonofy_settings_html() {
 
         <script>
 jQuery(document).ready(function($) {
-            .on('click', function(e) {
-                e.preventDefault();
-                var btn = ;
-                btn.prop('disabled', true).text('Testing...');
-                .hide();
+    $('#elmonofy-test-connection').on('click', function(e) {
+        e.preventDefault();
+        var btn = $(this);
+        var resultDiv = $('#elmonofy-test-result');
+        btn.prop('disabled', true).text('Testing...');
+        resultDiv.hide();
 
-                $.post(ajaxurl, {
-                    action: 'elmonofy_test_connection',
-                    nonce: '<?php echo wp_create_nonce("elmonofy_test_nonce"); ?>'
-                }, function(response) {
-                    btn.prop('disabled', false).text('Test Connection to ERP');
-                    var color = response.success ? '#d4edda' : '#f8d7da';
-                    var border = response.success ? '#c3e6cb' : '#f5c6cb';
-                    var textColor = response.success ? '#155724' : '#721c24';
-                    
-                    
-                        .css({'background': color, 'border': '1px solid ' + border, 'color': textColor})
-                        .html(response.data.message)
-                        .show();
-                });
-            });
+        $.post(ajaxurl, {
+            action: 'elmonofy_test_connection',
+            nonce: '<?php echo wp_create_nonce("elmonofy_test_nonce"); ?>'
+        }, function(response) {
+            btn.prop('disabled', false).text('Test Connection to ERP');
+            var color = response.success ? '#d4edda' : '#f8d7da';
+            var border = response.success ? '#c3e6cb' : '#f5c6cb';
+            var textColor = response.success ? '#155724' : '#721c24';
+
+            resultDiv.css({'background': color, 'border': '1px solid ' + border, 'color': textColor})
+                .html(response.data.message)
+                .show();
         });
+    });
+});
         </script>
     </div>
     <?php
@@ -97,6 +97,9 @@ jQuery(document).ready(function($) {
 add_action( 'wp_ajax_elmonofy_test_connection', 'elmonofy_handle_test_connection' );
 function elmonofy_handle_test_connection() {
     check_ajax_referer( 'elmonofy_test_nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( ['message' => 'Unauthorized'] );
+    }
     $erp_url = get_option('elmonofy_erp_url');
     $token = get_option('elmonofy_erp_token');
     if ( empty($erp_url) || empty($token) ) {
@@ -235,7 +238,11 @@ function elmonofy_schedule_retry( $order_id ) {
     if ( $retries < 3 ) {
         update_post_meta( $order_id, ELMONOFY_RETRY_COUNT, $retries + 1 );
         $wait = ( $retries + 1 ) * 15 * MINUTE_IN_SECONDS;
-        wp_schedule_single_event( time() + $wait, 'elmonofy_erp_async_sync', ['order_id' => $order_id] );
+        if ( function_exists( 'as_schedule_single_action' ) ) {
+            as_schedule_single_action( time() + $wait, 'elmonofy_erp_async_sync', ['order_id' => $order_id], 'elmonofy-erp' );
+        } else {
+            wp_schedule_single_event( time() + $wait, 'elmonofy_erp_async_sync', ['order_id' => $order_id] );
+        }
     }
 }
 
@@ -311,21 +318,27 @@ function elmonofy_verify_token($request) {
     if ( empty($auth) ) {
         return false;
     }
-    return hash_equals( 'token ' . $token, $auth );
+    if ( $token === '' || $token === null || $token === false ) {
+        return false;
+    }
+    return hash_equals( 'token ' . (string) $token, (string) $auth );
 }
 
 function elmonofy_handle_stock_update($request) {
     $params = $request->get_json_params();
+    if ( empty($params) ) {
+        $params = $request->get_params();
+    }
     if ( empty($params['sku']) ) return new WP_Error('no_sku', 'SKU required', ['status' => 400]);
-    $sku = sanitize_text_field($params['sku']);
+    $sku = sanitize_text_field( (string) $params['sku'] );
     $product_id = wc_get_product_id_by_sku($sku);
     if (!$product_id) return new WP_Error('not_found', 'Product not found', ['status' => 404]);
     $product = wc_get_product($product_id);
     if (isset($params['stock_qty'])) {
-        $product->set_stock_quantity(intval($params['stock_qty']));
+        $product->set_stock_quantity(intval( (string) $params['stock_qty'] ));
         $product->set_manage_stock(true);
     }
-    if (isset($params['price'])) $product->set_regular_price(wc_format_decimal($params['price']));
+    if (isset($params['price'])) $product->set_regular_price(wc_format_decimal( (string) $params['price'] ));
     $product->save();
     return rest_ensure_response([
         'status' => 'success',
@@ -343,7 +356,7 @@ function elmonofy_handle_create_product($request) {
     if ( empty($params['name']) ) return new WP_Error('no_name', 'Product name required', ['status' => 400]);
     if ( empty($params['sku']) )  return new WP_Error('no_sku', 'SKU required', ['status' => 400]);
 
-    $sku = sanitize_text_field($params['sku']);
+    $sku = sanitize_text_field( (string) $params['sku'] );
     $existing_id = wc_get_product_id_by_sku($sku);
 
     if ($existing_id) {
@@ -351,17 +364,17 @@ function elmonofy_handle_create_product($request) {
     }
 
     $product = new WC_Product_Simple();
-    $product->set_name( sanitize_text_field($params['name']) );
+    $product->set_name( sanitize_text_field( (string) $params['name'] ) );
     $product->set_sku( $sku );
     $product->set_status('draft');
 
     if ( isset($params['price']) ) {
-        $product->set_regular_price( wc_format_decimal($params['price']) );
+        $product->set_regular_price( wc_format_decimal( (string) $params['price'] ) );
     }
 
     if ( isset($params['stock_qty']) ) {
         $product->set_manage_stock(true);
-        $product->set_stock_quantity( intval($params['stock_qty']) );
+        $product->set_stock_quantity( intval( (string) $params['stock_qty'] ) );
     }
 
     $product_id = $product->save();
@@ -377,7 +390,7 @@ function elmonofy_handle_create_product($request) {
 
 function elmonofy_handle_get_products($request) {
     $page     = max(1, intval($request->get_param('page') ?: 1));
-    $per_page = max(1, intval($request->get_param('per_page') ?: 50));
+    $per_page = min(100, max(1, intval($request->get_param('per_page') ?: 50)));
 
     $results = wc_get_products([
         'status'   => 'publish',
@@ -409,7 +422,7 @@ function elmonofy_handle_get_products($request) {
 }
 
 function elmonofy_handle_get_product_by_sku($request) {
-    $sku = sanitize_text_field($request->get_param('sku'));
+    $sku = sanitize_text_field( (string) $request->get_param('sku') );
     $product_id = wc_get_product_id_by_sku($sku);
 
     if (!$product_id) {
@@ -429,7 +442,7 @@ function elmonofy_handle_get_product_by_sku($request) {
 }
 
 function elmonofy_handle_delete_product($request) {
-    $sku = sanitize_text_field($request->get_param('sku'));
+    $sku = sanitize_text_field( (string) $request->get_param('sku') );
     $product_id = wc_get_product_id_by_sku($sku);
 
     if (!$product_id) {
