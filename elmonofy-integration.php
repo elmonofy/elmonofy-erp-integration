@@ -31,7 +31,7 @@ function elmonofy_register_settings() {
     register_setting( 'elmonofy_settings_group', 'elmonofy_pickup_warehouse', ['sanitize_callback' => 'sanitize_text_field'] );
     
     if ( false === get_option( 'elmonofy_pickup_warehouse' ) ) {
-        update_option( 'elmonofy_pickup_warehouse', 'Online - EG' );
+        update_option( 'elmonofy_pickup_warehouse', 'Market Place - EG' );
     }
 }
 
@@ -52,7 +52,7 @@ function elmonofy_settings_html() {
                 </tr>
                 <tr>
                     <th>Pickup Warehouse</th>
-                    <td><input type="text" name="elmonofy_pickup_warehouse" value="<?php echo esc_attr( get_option('elmonofy_pickup_warehouse', 'Online - EG') ); ?>" class="regular-text" /></td>
+                    <td><input type="text" name="elmonofy_pickup_warehouse" value="<?php echo esc_attr( get_option('elmonofy_pickup_warehouse', 'Market Place - EG') ); ?>" class="regular-text" /></td>
                 </tr>
             </table>
             <?php submit_button(); ?>
@@ -141,7 +141,7 @@ function elmonofy_execute_sync( $order_id ) {
 
     $erp_url = get_option('elmonofy_erp_url');
     $token = get_option('elmonofy_erp_token');
-    $warehouse = get_option('elmonofy_pickup_warehouse', 'Online - EG');
+    $warehouse = get_option('elmonofy_pickup_warehouse', 'Market Place - EG');
     $logger = wc_get_logger();
     $log_context = [ 'source' => 'elmonofy-erp' ];
 
@@ -189,7 +189,7 @@ function elmonofy_execute_sync( $order_id ) {
         'payment' => [
             'payment_id'       => $order->get_transaction_id() ?: 'woo_' . $order_id,
             'amount'           => (float)$order->get_total(),
-            'payment_datetime' => current_time('mysql'),
+            'payment_datetime' => $order->get_date_paid() ? $order->get_date_paid()->date('Y-m-d H:i:s') : current_time('mysql'),
         ]
     ];
 
@@ -273,6 +273,82 @@ function elmonofy_fill_sync_column( $column ) {
             echo '<span class="tips" data-tip="Pending">Pending</span>';
         }
     }
+}
+
+add_filter( 'bulk_actions-edit-shop_order', 'elmonofy_add_bulk_retry_action' );
+function elmonofy_add_bulk_retry_action( $bulk_actions ) {
+    $bulk_actions['elmonofy_retry_sync'] = 'Retry ERP Sync';
+    return $bulk_actions;
+}
+
+add_filter( 'handle_bulk_actions-edit-shop_order', 'elmonofy_handle_bulk_retry_action', 10, 3 );
+function elmonofy_handle_bulk_retry_action( $redirect_to, $action, $order_ids ) {
+    if ( $action !== 'elmonofy_retry_sync' ) {
+        return $redirect_to;
+    }
+    $processed = 0;
+    foreach ( $order_ids as $order_id ) {
+        $order = wc_get_order( $order_id );
+        if ( $order && $order->get_meta( ELMONOFY_SYNC_META ) !== 'yes' ) {
+            delete_post_meta( $order_id, ELMONOFY_RETRY_COUNT );
+            elmonofy_erp_schedule_sync( $order_id );
+            $processed++;
+        }
+    }
+    return add_query_arg( 'elmonofy_bulk_retried', $processed, $redirect_to );
+}
+
+add_action( 'admin_notices', 'elmonofy_bulk_retry_notice' );
+function elmonofy_bulk_retry_notice() {
+    if ( ! isset( $_GET['elmonofy_bulk_retried'] ) ) {
+        return;
+    }
+    $count = intval( $_GET['elmonofy_bulk_retried'] );
+    echo '<div class="notice notice-success is-dismissible"><p>ERP Sync retry scheduled for ' . $count . ' order(s).</p></div>';
+}
+
+add_action( 'admin_notices', 'elmonofy_order_retry_notice' );
+function elmonofy_order_retry_notice() {
+    if ( ! isset( $_GET['elmonofy_retried'] ) ) {
+        return;
+    }
+    echo '<div class="notice notice-success is-dismissible"><p>ERP Sync retry scheduled.</p></div>';
+}
+
+add_action( 'admin_head', 'elmonofy_add_order_action_css' );
+function elmonofy_add_order_action_css() {
+    echo '<style>.wc-action-button.elmonofy-retry::after { font-family: WooCommerce; content: "\e030"; }</style>';
+}
+
+add_filter( 'woocommerce_admin_order_actions', 'elmonofy_add_order_row_action', 10, 2 );
+function elmonofy_add_order_row_action( $actions, $order ) {
+    if ( $order->get_meta( ELMONOFY_SYNC_META ) !== 'yes' ) {
+        $actions['elmonofy_retry'] = [
+            'url' => wp_nonce_url( admin_url( 'admin.php?action=elmonofy_retry_sync&order_id=' . $order->get_id() ), 'elmonofy_retry_nonce' ),
+            'name' => 'Retry ERP Sync',
+            'action' => 'elmonofy-retry',
+        ];
+    }
+    return $actions;
+}
+
+add_action( 'admin_action_elmonofy_retry_sync', 'elmonofy_handle_order_row_action' );
+function elmonofy_handle_order_row_action() {
+    if ( ! isset( $_GET['order_id'] ) || ! isset( $_GET['_wpnonce'] ) ) {
+        return;
+    }
+    $order_id = intval( $_GET['order_id'] );
+    if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'elmonofy_retry_nonce' ) ) {
+        wp_die( 'Security check failed.' );
+    }
+    $order = wc_get_order( $order_id );
+    if ( ! $order ) {
+        wp_die( 'Order not found.' );
+    }
+    delete_post_meta( $order_id, ELMONOFY_RETRY_COUNT );
+    elmonofy_erp_schedule_sync( $order_id );
+    wp_safe_redirect( admin_url( 'edit.php?post_type=shop_order&elmonofy_retried=1' ) );
+    exit;
 }
 
 /**
