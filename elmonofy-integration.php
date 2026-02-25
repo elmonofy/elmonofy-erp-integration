@@ -337,6 +337,9 @@ function elmonofy_handle_order_row_action() {
     if ( ! isset( $_GET['order_id'] ) || ! isset( $_GET['_wpnonce'] ) ) {
         return;
     }
+    if ( ! current_user_can( 'edit_shop_orders' ) ) {
+        wp_die( 'Security check failed.' );
+    }
     $order_id = intval( $_GET['order_id'] );
     if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'elmonofy_retry_nonce' ) ) {
         wp_die( 'Security check failed.' );
@@ -410,6 +413,9 @@ function elmonofy_handle_stock_update($request) {
     $product_id = wc_get_product_id_by_sku($sku);
     if (!$product_id) return new WP_Error('not_found', 'Product not found', ['status' => 404]);
     $product = wc_get_product($product_id);
+    if ( ! $product ) {
+        return new WP_Error('not_found', 'Product not loadable', ['status' => 404]);
+    }
     if (isset($params['stock_qty'])) {
         $product->set_stock_quantity(intval( (string) $params['stock_qty'] ));
         $product->set_manage_stock(true);
@@ -506,6 +512,9 @@ function elmonofy_handle_get_product_by_sku($request) {
     }
 
     $product = wc_get_product($product_id);
+    if ( ! $product ) {
+        return new WP_Error('not_found', 'Product not loadable', ['status' => 404]);
+    }
 
     return rest_ensure_response([
         'id'        => $product->get_id(),
@@ -526,6 +535,9 @@ function elmonofy_handle_delete_product($request) {
     }
 
     $product = wc_get_product($product_id);
+    if ( ! $product ) {
+        return new WP_Error('not_found', 'Product not loadable', ['status' => 404]);
+    }
     $product->delete(false);
 
     return rest_ensure_response([
