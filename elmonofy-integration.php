@@ -8,6 +8,12 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// Prevent fatal errors when two copies of the plugin are present in wp-content/plugins.
+if ( defined( 'ELMONOFY_PLUGIN_BOOTSTRAPPED' ) ) {
+    return;
+}
+define( 'ELMONOFY_PLUGIN_BOOTSTRAPPED', true );
+
 /**
  * Constants
  */
