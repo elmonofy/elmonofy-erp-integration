@@ -8,7 +8,12 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-// Prevent fatal errors when two copies of the plugin are present in wp-content/plugins.
+// Prevent fatal errors when another Elmonofy copy is already loaded first.
+if ( function_exists( 'elmonofy_add_settings_page' ) ) {
+    return;
+}
+
+// Prevent fatal errors when the same file is loaded twice.
 if ( defined( 'ELMONOFY_PLUGIN_BOOTSTRAPPED' ) ) {
     return;
 }
